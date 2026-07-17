@@ -126,11 +126,11 @@ def read_file_to_df(filepath):
 
 
 def clean_data(df):
-    # time to clean the data! we handle duplicates in three different ways depending on what info we have:
+    # time to clean the data! we will handle duplicates in three different ways depending on what info we have:
     # 1. if we have both job name and order number, that's easy. just drop exact duplicates.
-    # 2. if we only have the job name, we look at the time and machine. if the same machine throws
-    #    errors back to back, we ignore the spam. if it moves to a different machine, we keep it.
-    # 3. if we have no job info at all, we just block identical errors on the same machine from spamming
+    # 2. if we only have the job name, we will look at the time and machine. if the same machine throws
+    #    errors back to back, we will ignore the spam. if it moves to a different machine, we will keep it.
+    # 3. if we have no job info at all, we will just block identical errors on the same machine from spamming
     #    us if they happen too close together.
     df.columns = df.columns.str.strip()
     df["DateTime"] = pd.to_datetime(df["DateTime"], errors="coerce", format="%m/%d/%Y %I:%M:%S %p")
