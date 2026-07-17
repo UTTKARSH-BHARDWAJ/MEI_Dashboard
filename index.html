@@ -112,12 +112,12 @@
         const palette = ['#e17055', '#0984e3', '#00b894', '#6c5ce7', '#fdcb6e', '#fab1a0', '#2d3436', '#d63031', '#00cec9', '#74b9ff'];
 
         function fmtDay(d) {
-            // Local y-m-d, deliberately NOT using toISOString() to avoid UTC-shift mismatches against the naive _day strings
+            // format the date as yyyy-mm-dd. we do this manually so timezones don't mess up our days.
             return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
         }
 
         function fmtPct(count, total) {
-            // Exact-enough precision that scales with magnitude, so rare categories never collapse to a misleading "0.0%"
+            // show just enough decimal places so small numbers don't round down to 0%
             const pct = total ? (count / total) * 100 : 0;
             if (pct === 0) return '0%';
             if (pct < 0.1) return pct.toFixed(3) + '%';
@@ -129,14 +129,12 @@
             document.getElementById('status-msg').innerText = msg;
         }
 
-        // --- Data bootstrap: replaces the old Python-templated DATA_JSON with a live fetch,
-        // since the dataset now lives server-side (SQLite, 2-month rolling window) instead of
-        // being baked into the page at generation time. ---
+        // --- grab the data from our new database instead of baking it into the html like we used to ---
         function loadDataset(payload) {
             data = payload.data || [];
             data.forEach(d => {
                 d._ts = new Date(d.Timestamp).getTime();
-                d._day = d.Timestamp.slice(0, 10); // naive/local, no timezone conversion
+                d._day = d.Timestamp.slice(0, 10); // just grab the date part, ignore timezones
             });
             currentMinTs = payload.min_ts || '';
             currentMaxTs = payload.max_ts || '';
@@ -180,14 +178,14 @@
         }
 
         document.getElementById('file-input').addEventListener('change', function() {
-            // Append newly selected files (don't replace existing selection)
+            // add new files to the list without wiping out what's already there
             for (const f of this.files) {
-                // Avoid duplicates by name+size
+                // don't add the same file twice
                 if (!selectedFiles.some(sf => sf.name === f.name && sf.size === f.size)) {
                     selectedFiles.push(f);
                 }
             }
-            this.value = ''; // reset so re-selecting the same file triggers change
+            this.value = ''; // clear the input so you can pick the exact same file again if you want
             renderFileList();
             setStatus(`${selectedFiles.length} file(s) selected`);
         });
@@ -238,13 +236,13 @@
         function applyFilters() {
             const s = new Date(document.getElementById('start-date').value).getTime();
             const e = new Date(document.getElementById('end-date').value).getTime();
-            // Perf fix: compare against pre-parsed d._ts instead of re-parsing new Date(d.Timestamp) for every row on every click
+            // super fast filtering: we compare the raw numbers instead of turning strings into dates every single time
             filtered = data.filter(d => d._ts >= s && d._ts <= e);
             render();
         }
 
         function render() {
-            // selectedDay cascades to every section below (leaderboard, hourly, doughnut, table, logs, and the global reasons chart)
+            // if you click a day, it filters everything on the dashboard to just show that day's stuff
             const dayFiltered = filtered.filter(d => !selectedDay || d._day === selectedDay);
             const reasonsData = dayFiltered.filter(d => !selectedReason || d['Reject Detail'] === selectedReason);
             const counts = {}; reasonsData.forEach(d => counts[d['Machine Name']] = (counts[d['Machine Name']] || 0) + 1);

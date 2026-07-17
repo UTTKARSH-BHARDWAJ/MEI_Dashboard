@@ -15,15 +15,15 @@ app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024  # 500 MB max upload
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-UPLOAD_FOLDER = os.path.join(BASE_DIR, "uploads")   # scratch space for raw uploaded files, wiped right after parsing
-STORAGE_DIR = os.path.join(BASE_DIR, "storage")     # persistent — must be a real disk, NOT /tmp (that's why we dropped the Vercel path)
+UPLOAD_FOLDER = os.path.join(BASE_DIR, "uploads")   # where we temporarily drop files before reading them
+STORAGE_DIR = os.path.join(BASE_DIR, "storage")     # where the database lives, needs to be a real folder
 DB_PATH = os.path.join(STORAGE_DIR, "rejections.db")
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(STORAGE_DIR, exist_ok=True)
 
 MAX_FILES = 100
-RETENTION_DAYS = 60  # ~2 months, rolling window keyed on each record's OWN event timestamp
+RETENTION_DAYS = 60  # keep data for 60 days based on when the error actually happened
 
 
 # ---------------------------------------------------------------------------
@@ -33,10 +33,8 @@ RETENTION_DAYS = 60  # ~2 months, rolling window keyed on each record's OWN even
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    # Defensive: ensure the schema exists on every single connection, not just once at import
-    # time. This is cheap (IF NOT EXISTS) and guards against any deployment scenario where the
-    # DB file gets reset, recreated on a fresh volume, or opened by a process that skipped the
-    # one-time init — all of which produce exactly "no such table: rejections".
+    # just making sure the table is always there before we try to use it
+    # doing it here means we don't crash if the db file accidentally gets deleted
     conn.execute("""
         CREATE TABLE IF NOT EXISTS rejections (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -56,8 +54,8 @@ def get_db():
 
 
 def init_db():
-    # Kept as an explicit startup call (see bottom of this section) so schema creation happens
-    # once eagerly and errors surface immediately at boot rather than on first request.
+    # call this right when the app starts so it crashes early if there's a database problem,
+    # instead of waiting for someone to actually use the app
     with closing(get_db()):
         pass
 
@@ -68,17 +66,16 @@ logging.info(f"Storage DB path: {DB_PATH} (exists: {os.path.exists(DB_PATH)})")
 
 
 def prune_old_records(conn):
-    """Delete rows whose OWN event timestamp is older than the retention window — a rolling
-    2-month log, not a 2-month-since-upload rule."""
+    # clean out old data so the database doesn't get huge
+    # we look at the actual error time, not when it was uploaded
     cutoff = (datetime.now() - timedelta(days=RETENTION_DAYS)).strftime("%Y-%m-%dT%H:%M:%S")
     conn.execute("DELETE FROM rejections WHERE timestamp < ?", (cutoff,))
     conn.commit()
 
 
 def insert_records(conn, records):
-    """Insert cleaned rows, silently skipping exact duplicates (e.g. re-uploading a file that
-    overlaps a previous upload's date range). This is a safety net only — it is not a
-    substitute for the Case 1/2/3 dedup logic that already ran on the file before it got here."""
+    # save the records to the database. we use IGNORE so if you upload the exact same file twice,
+    # it won't create duplicates.
     now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
     conn.executemany(
         """INSERT OR IGNORE INTO rejections
@@ -116,7 +113,7 @@ def fetch_all_records(conn):
 # ---------------------------------------------------------------------------
 
 def read_file_to_df(filepath):
-    """Read a file into a DataFrame based on its extension."""
+    # figure out if it's a csv or excel file and read it properly
     ext = os.path.splitext(filepath)[1].lower()
     if ext == ".csv":
         return pd.read_csv(filepath)
@@ -129,26 +126,12 @@ def read_file_to_df(filepath):
 
 
 def clean_data(df):
-    """Case 1/2/3 dedup pipeline.
-
-    Case 1 (Job Name + Nr Order both present): unchanged — (Job Name, Nr Order) together is a
-    true unique job-instance key, confirmed against real data (many Job Names legitimately repeat
-    across different Nr Orders), so an exact-match drop_duplicates is correct regardless of the
-    time gap between repeats.
-
-    Case 2 (Job Name present, Nr Order missing): machine-aware windowed dedup.
-        - Same machine as the last kept row, within the day/night window -> duplicate log spam -> drop.
-        - Different machine, within the window -> the job failed and got transferred -> KEEP
-          (a real, distinct fault for that machine), and this does NOT count as a new job instance —
-          it's still the same job execution, just continuing elsewhere.
-        - Same machine, gap exceeds the window -> looks like Job Name being reused for a genuinely
-          new job -> only allowed if fewer than 2 such new instances started in the trailing 24h
-          (reuse that fast is rare, per the operator's own description of how jobs work).
-
-    Case 3 (both missing): no Job Name/Order at all, so no job-instance concept and no transfer
-    logic applies. Just a straightforward day/night-window debounce keyed on
-    (Machine Name, Reject Detail, Message) to collapse rapid retriggers of the identical fault.
-    """
+    # time to clean the data! we handle duplicates in three different ways depending on what info we have:
+    # 1. if we have both job name and order number, that's easy. just drop exact duplicates.
+    # 2. if we only have the job name, we look at the time and machine. if the same machine throws
+    #    errors back to back, we ignore the spam. if it moves to a different machine, we keep it.
+    # 3. if we have no job info at all, we just block identical errors on the same machine from spamming
+    #    us if they happen too close together.
     df.columns = df.columns.str.strip()
     df["DateTime"] = pd.to_datetime(df["DateTime"], errors="coerce", format="%m/%d/%Y %I:%M:%S %p")
 
@@ -185,7 +168,7 @@ def clean_data(df):
         last_kept_machine = None
         last_kept_time = None
         instance_times = []
-        # zip over Index + column values avoids the per-row Series construction cost of iterrows
+        # using zip here is way faster than looping through the rows normally
         for idx, dt, machine in zip(grp.index, grp["DateTime"], grp["Machine Name"]):
             if last_kept_time is None:
                 accepted_rows_c2.append(idx)
@@ -197,17 +180,16 @@ def clean_data(df):
             gap = dt - last_kept_time
 
             if machine == last_kept_machine and gap <= window:
-                # same machine, still inside the debounce window -> duplicate
+                # error happened again too soon on the same machine, so ignore it
                 continue
 
             if machine != last_kept_machine:
-                # transferred to a different machine -> real, distinct fault for that machine;
-                # doesn't consume the 24h new-instance cap since it's the same job execution
+                # job moved to a new machine and failed there too. keep it since it's a new issue.
                 accepted_rows_c2.append(idx)
                 last_kept_machine, last_kept_time = machine, dt
                 continue
 
-            # same machine, gap exceeds window -> candidate for a genuinely new job instance
+            # enough time passed that this looks like a completely new run of the same job name
             instance_times = [t for t in instance_times if dt - t < DAY_LIMIT]
             if len(instance_times) >= 2:
                 continue
@@ -248,7 +230,7 @@ def clean_data(df):
 
 
 def _save_and_read(file_tuple):
-    """Save an uploaded file to disk, read it into a DataFrame, then clean up the raw file."""
+    # temporarily save the file, load the data out of it, and then delete the file
     file_obj, upload_folder = file_tuple
     raw_name = secure_filename(file_obj.filename)
     if not raw_name:
@@ -272,7 +254,7 @@ def fast_json_response(obj):
 
 
 def _dataset_response():
-    """Prune expired rows, then return the full currently-retained (<=60 day) dataset."""
+    # clear out old stuff, then grab everything else from the database to send back
     with closing(get_db()) as conn:
         prune_old_records(conn)
         records = fetch_all_records(conn)
@@ -298,8 +280,7 @@ def home():
 
 @app.route("/api/data", methods=["GET"])
 def get_data():
-    """Returns whatever is currently retained — no upload needed. Powers the initial page load
-    so a returning user sees past data without re-uploading anything."""
+    # this just loads the existing data when you open the dashboard page
     try:
         return _dataset_response()
     except Exception:
@@ -309,8 +290,8 @@ def get_data():
 
 @app.route("/api/analyze", methods=["POST"])
 def analyze_file():
-    """Process uploaded files and return cleaned data WITHOUT storing to DB.
-    This is a preview-only endpoint — data disappears on page refresh."""
+    # just look at the uploaded files and return the cleaned data for a preview.
+    # we don't save anything to the database here.
     files = request.files.getlist("file")
     if not files or all(f.filename == "" for f in files):
         return jsonify({"error": "No file provided"}), 400
@@ -355,7 +336,7 @@ def analyze_file():
 
 @app.route("/api/upload", methods=["POST"])
 def upload_file():
-    """Process uploaded files, store cleaned data to DB, and return the full stored dataset."""
+    # clean the uploaded files, save the results into the database, and return everything
     files = request.files.getlist("file")
     if not files or all(f.filename == "" for f in files):
         return jsonify({"error": "No file provided"}), 400
@@ -380,8 +361,7 @@ def upload_file():
             .to_dict(orient="records")
         )
 
-        # Persist into the rolling 2-month store, then return the FULL current dataset —
-        # existing retained rows plus this upload's new ones — not just what was just uploaded.
+        # save the new stuff and delete the old stuff
         with closing(get_db()) as conn:
             insert_records(conn, new_records)
             prune_old_records(conn)
