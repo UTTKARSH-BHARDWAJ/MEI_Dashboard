@@ -6,7 +6,6 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from datetime import datetime, timedelta
-
 from flask import Flask, jsonify, request, send_from_directory, Response
 from werkzeug.utils import secure_filename
 import pandas as pd

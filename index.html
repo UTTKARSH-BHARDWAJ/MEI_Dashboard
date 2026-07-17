@@ -5,7 +5,7 @@
     <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.0.0"></script>
     <style>
         body { font-family: 'Segoe UI', sans-serif; background-color: #f0f2f5; margin: 0; padding: 20px; color: #1a1a1a; }
-        .filter-bar { background: white; padding: 20px; border-radius: 12px; margin-bottom: 20px; display: flex; gap: 15px; align-items: flex-end; box-shadow: 0 2px 8px rgba(0,0,0,0.05); border: 1px solid #dee2e6; }
+        .filter-bar { position: sticky; top: 10px; z-index: 999; background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(5px); padding: 20px; border-radius: 12px; margin-bottom: 20px; display: flex; gap: 15px; align-items: flex-end; box-shadow: 0 4px 15px rgba(0,0,0,0.1); border: 1px solid #dee2e6; }
         .filter-group { display: flex; flex-direction: column; gap: 5px; }
         .filter-group label { font-size: 0.75em; font-weight: 800; color: #e17055; text-transform: uppercase; }
         .filter-group input { padding: 10px; border-radius: 8px; border: 2px solid #eee; }
@@ -45,6 +45,11 @@
         .msg-badge { background: #dfe6e9; padding: 2px 8px; border-radius: 8px; font-weight: bold; height: fit-content; color: #000; }
         .job-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; padding: 10px; }
         .job-tag { background: #f8f9fa; border: 1px solid #dee2e6; padding: 4px 8px; border-radius: 6px; font-size: 0.8em; text-align: center; color: #4b4b4b; }
+        .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; align-items: center; justify-content: center; }
+        .modal-content { background: white; padding: 25px; border-radius: 12px; max-width: 900px; width: 90%; max-height: 90vh; overflow-y: auto; box-shadow: 0 10px 30px rgba(0,0,0,0.2); position: relative; }
+        .modal-close { position: absolute; top: 15px; right: 20px; font-size: 24px; cursor: pointer; background: none; border: none; color: #636e72; }
+        .machine-mini-card { background: #fff5f2; border: 1px solid #e17055; padding: 15px; border-radius: 12px; cursor: pointer; transition: transform 0.2s, box-shadow 0.2s; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
+        .machine-mini-card:hover { transform: translateY(-3px); box-shadow: 0 6px 15px rgba(0,0,0,0.1); }
     </style>
 </head>
 <body>
@@ -65,6 +70,15 @@
     </div>
 
     <div class="dashboard-container">
+        <div class="full-card" style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 15px; padding: 5px; margin-bottom: -5px;" id="machine-cards-container">
+            <!-- Machine cards injected here -->
+        </div>
+
+        <div class="card full-card">
+            <h3> Total Errors by Machine</h3>
+            <div class="canvas-wrapper" style="min-height: 350px;"><canvas id="machineErrorsChart"></canvas></div>
+        </div>
+
         <div class="card full-card">
             <h3 id="scroll-title"> Global Rejection Reasons</h3>
             <div class="horizontal-scroll-wrapper">
@@ -96,6 +110,11 @@
         <div class="card narrow-card"><h3 id="log-title"> Tech Message Log</h3><div class="scroll-container" id="message-log"></div></div>
 
         <div class="card full-card">
+            <h3 id="message-chart-title"> Message Log Chart</h3>
+            <div class="canvas-wrapper" style="min-height: 350px;"><canvas id="messageChart"></canvas></div>
+        </div>
+
+        <div class="card full-card">
             <h3 id="job-title"> Job Inventory for Selected Message</h3>
             <div class="scroll-container" id="job-log"><div style="padding:20px;color:#636e72;text-align:center">Click a message above to see associated jobs</div></div>
         </div>
@@ -107,7 +126,7 @@
 
         let data = [];
         let filtered = [], selected = null, selectedReason = null, selectedMessage = null, selectedDay = null;
-        let pieChart = null, scrollChart = null, hourlyChart = null, dailyChart = null;
+        let pieChart = null, scrollChart = null, hourlyChart = null, dailyChart = null, messageChart = null, modalChart = null, machineErrorsChart = null;
         let currentMinTs = '', currentMaxTs = '';
         const palette = ['#e17055', '#0984e3', '#00b894', '#6c5ce7', '#fdcb6e', '#fab1a0', '#2d3436', '#d63031', '#00cec9', '#74b9ff'];
 
@@ -248,6 +267,62 @@
             const counts = {}; reasonsData.forEach(d => counts[d['Machine Name']] = (counts[d['Machine Name']] || 0) + 1);
             const sorted = Object.entries(counts).sort((a,b) => b[1]-a[1]);
 
+            const container = document.getElementById('machine-cards-container');
+            if (sorted.length > 0) {
+                container.innerHTML = sorted.map(([machine, total], i) => {
+                    const wErrs = {};
+                    dayFiltered.filter(d => d['Machine Name'] === machine).forEach(d => wErrs[d['Reject Detail']] = (wErrs[d['Reject Detail']] || 0) + 1);
+                    const wSorted = Object.entries(wErrs).sort((a,b) => b[1]-a[1]);
+                    
+                    let topDetailHtml = '-';
+                    if (wSorted.length > 0) {
+                        const topErrName = wSorted[0][0];
+                        const topErrCount = wSorted[0][1];
+                        topDetailHtml = `<div style="color: #d63031; margin-top: 5px; font-weight: bold; font-size: 0.9em; white-space: normal;">Top Reason: ${topErrName}</div>
+                                         <div style="font-size: 0.85em; color: #636e72;">${topErrCount.toLocaleString()} errors (${fmtPct(topErrCount, total)})</div>`;
+                    }
+                    
+                    return `<div class="machine-mini-card" onclick="openTopMachineModal('${machine}')">
+                        <div style="display: flex; justify-content: space-between; align-items: baseline;">
+                            <h3 style="margin: 0; border: none; padding: 0; font-size: 1.1em; color: #2d3436;">${i===0?' ':''}${machine}</h3>
+                            <span style="font-weight: bold; font-size: 1.1em; color: #2d3436;">${total.toLocaleString()}</span>
+                        </div>
+                        ${topDetailHtml}
+                    </div>`;
+                }).join('');
+            } else {
+                container.innerHTML = '<div style="padding: 20px; color: #636e72; text-align: center; width: 100%;">No machine data available</div>';
+            }
+            
+            if (machineErrorsChart) machineErrorsChart.destroy();
+            const maxMachineCount = sorted.length ? sorted[0][1] : 10;
+            machineErrorsChart = new Chart(document.getElementById('machineErrorsChart'), {
+                type: 'bar',
+                data: {
+                    labels: sorted.map(x => x[0]),
+                    datasets: [{ 
+                        label: 'Total Errors', 
+                        data: sorted.map(x => x[1]), 
+                        backgroundColor: sorted.map(x => (selected === x[0] ? '#e17055' : (selected ? '#b2bec3' : '#0984e3'))) 
+                    }]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    onClick: (evt, elements) => {
+                        if (elements.length > 0) {
+                            const label = machineErrorsChart.data.labels[elements[0].index];
+                            selected = (selected === label ? null : label);
+                            render();
+                        }
+                    },
+                    plugins: { legend: { display: false }, datalabels: { anchor: 'end', align: 'top', color: '#1a1a1a', font: { weight: 'bold', size: 9 } } },
+                    scales: { 
+                        y: { beginAtZero: true, suggestedMax: maxMachineCount * 1.15 }, 
+                        x: { grid: { display: false }, ticks: { maxRotation: 90, minRotation: 90, font: { size: 9 } } } 
+                    }
+                }
+            });
+
             // Determine the fully filtered subset for KPIs and Pie/Hourly charts
             const sub = selected ? reasonsData.filter(d => d['Machine Name'] === selected) : reasonsData;
 
@@ -272,7 +347,7 @@
 
             if(scrollChart) scrollChart.destroy();
             scrollChart = new Chart(document.getElementById('scrollChart'), {
-                type: 'bar', data: { labels: sortedGlobal.map(x => x[0]), datasets: [{ label: 'Qty', data: sortedGlobal.map(x => x[1]), backgroundColor: sortedGlobal.map(x => x[0] === selectedReason ? '#d63031' : '#e17055') }] },
+                type: 'bar', data: { labels: sortedGlobal.map(x => x[0]), datasets: [{ label: 'Qty', data: sortedGlobal.map(x => x[1]), backgroundColor: sortedGlobal.map(x => (selectedReason === x[0] ? '#d63031' : (selectedReason ? '#b2bec3' : '#e17055'))) }] },
                 options: {
                     responsive: true, maintainAspectRatio: false,
                     onClick: (evt, elements) => { if (elements.length > 0) { const label = sortedGlobal[elements[0].index][0]; selectedReason = (selectedReason === label ? null : label); render(); } },
@@ -305,7 +380,7 @@
             if (dailyChart) dailyChart.destroy();
             dailyChart = new Chart(document.getElementById('dailyChart'), {
                 type: 'bar',
-                data: { labels: dayLabels, datasets: [{ label: 'Qty', data: dayVals, backgroundColor: dayLabels.map(d => d === selectedDay ? '#d63031' : '#0984e3') }] },
+                data: { labels: dayLabels, datasets: [{ label: 'Qty', data: dayVals, backgroundColor: dayLabels.map(d => (selectedDay === d ? '#d63031' : (selectedDay ? '#b2bec3' : '#0984e3'))) }] },
                 options: {
                     responsive: true, maintainAspectRatio: false,
                     onClick: (evt, elements) => { if (elements.length > 0) { const day = dayLabels[elements[0].index]; selectedDay = (selectedDay === day ? null : day); render(); } },
@@ -377,6 +452,12 @@
             }).join('');
             document.getElementById('message-log').innerHTML = '<div style="padding:20px;color:#636e72;text-align:center">Select a table row for logs</div>';
             document.getElementById('job-log').innerHTML = '<div style="padding:20px;color:#636e72;text-align:center">Click a message above to see associated jobs</div>';
+            
+            document.getElementById('message-chart-title').innerText = '📊 Message Log Chart';
+            if(messageChart) {
+                messageChart.destroy();
+                messageChart = null;
+            }
 
         }
 
@@ -391,6 +472,43 @@
             document.getElementById('message-log').innerHTML = sortedLogs.map(([msg, c]) =>
                 `<div class="message-item ${selectedMessage === msg ? 'active' : ''}" onclick="showJobs('${msg}', '${reason}')">` +
                 `<span class="msg-text">${msg}</span><span class="msg-badge">${c}</span></div>`).join('');
+
+            document.getElementById('message-chart-title').innerText = `📊 Message Log Chart: ${reason}`;
+            if(messageChart) messageChart.destroy();
+            
+            const maxMsgVal = sortedLogs.length ? Math.max(...sortedLogs.map(x => x[1])) : 10;
+            messageChart = new Chart(document.getElementById('messageChart'), {
+                type: 'bar',
+                data: {
+                    labels: sortedLogs.map(x => {
+                        let text = x[0];
+                        const idx = text.indexOf(':');
+                        if (idx !== -1) text = text.substring(idx + 1).trim();
+                        return text;
+                    }),
+                    datasets: [{ label: 'Qty', data: sortedLogs.map(x => x[1]), backgroundColor: '#6c5ce7' }]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    plugins: { 
+                        legend: { display: false }, 
+                        datalabels: { anchor: 'end', align: 'top', color: '#1a1a1a', font: { weight: 'bold' } } 
+                    },
+                    scales: { 
+                        y: { beginAtZero: true, suggestedMax: maxMsgVal * 1.15 }, 
+                        x: { 
+                            grid: { display: false }, 
+                            ticks: { 
+                                maxRotation: 45, minRotation: 45, font: { size: 10 },
+                                callback: function(value) {
+                                    let label = this.getLabelForValue(value) || '';
+                                    return label.length > 35 ? label.substring(0, 35) + '...' : label;
+                                }
+                            } 
+                        } 
+                    }
+                }
+            });
         }
 
         function showJobs(msg, reason) {
@@ -413,7 +531,47 @@
             document.getElementById('job-log').innerHTML = `<div class="job-grid">${uniqueJobs.map(j => `<div class="job-tag">${j}</div>`).join('')}</div>`;
         }
 
+        function openTopMachineModal(machineName) {
+            document.getElementById('modal-title').innerText = `Breakdown: ${machineName}`;
+            document.getElementById('machine-modal').style.display = 'flex';
+            
+            const wErrs = {};
+            const dayFiltered = filtered.filter(d => !selectedDay || d._day === selectedDay);
+            dayFiltered.filter(d => d['Machine Name'] === machineName).forEach(d => wErrs[d['Reject Detail']] = (wErrs[d['Reject Detail']] || 0) + 1);
+            const wSorted = Object.entries(wErrs).sort((a,b) => b[1]-a[1]);
+            const total = wSorted.reduce((sum, x) => sum + x[1], 0);
+
+            if(modalChart) modalChart.destroy();
+            modalChart = new Chart(document.getElementById('modalChart'), {
+                type: 'doughnut',
+                data: { 
+                    labels: wSorted.map(x => `${x[0]} (${fmtPct(x[1], total)})`), 
+                    datasets: [{ data: wSorted.map(x => x[1]), backgroundColor: wSorted.map((_, i) => palette[i % palette.length]) }] 
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    plugins: {
+                        legend: { position: 'right', labels: { boxWidth: 10, font: { size: 10 }, padding: 8 } },
+                        datalabels: {
+                            color: '#fff', font: { weight: 'bold', size: 12 },
+                            display: (ctx) => ((ctx.dataset.data[ctx.dataIndex] / total) * 100 < 2 ? false : 'auto'),
+                            formatter: v => ((v / total) * 100).toFixed(1) + '%'
+                        }
+                    }
+                }
+            });
+        }
+
         fetchStoredData();
     </script>
+    <div class="modal-overlay" id="machine-modal" onclick="if(event.target===this) this.style.display='none'">
+        <div class="modal-content">
+            <button class="modal-close" onclick="document.getElementById('machine-modal').style.display='none'">✕</button>
+            <h2 id="modal-title" style="margin-top:0; border-left: 5px solid #e17055; padding-left: 10px;">Machine Breakdown</h2>
+            <div class="canvas-wrapper" style="height: 500px; margin-top: 20px;">
+                <canvas id="modalChart"></canvas>
+            </div>
+        </div>
+    </div>
 </body>
 </html>
