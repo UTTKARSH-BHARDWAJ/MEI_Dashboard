@@ -25,6 +25,9 @@
         .full-card { grid-column: span 4; }
         .chart-card { grid-column: span 3; min-height: 400px; }
         .narrow-card { grid-column: span 2; min-height: 400px; }
+        .clickable-tr { cursor: pointer; transition: background-color 0.2s; }
+        .clickable-tr:hover { background-color: #f8f9fa; }
+        .table-row-active { background-color: rgba(225, 112, 85, 0.15) !important; font-weight: bold; color: #d63031; }
         .quarter-card { grid-column: span 1; min-height: 400px; }
         .horizontal-scroll-wrapper { width: 100%; overflow-x: auto; padding: 10px 0; border: 1px solid #eee; border-radius: 8px; }
         .scroll-chart-container { min-width: 2000px; height: 420px; padding-left: 20px; }
@@ -66,7 +69,8 @@
         <div class="filter-group"><label>End Range</label><input type="datetime-local" id="end-date"></div>
         <button class="btn-apply" onclick="applyFilters()">Update</button>
         <button class="btn-reset" onclick="resetDashboard()">Reset All</button>
-        <span id="status-msg" style="margin-left: auto; color: #636e72; font-weight: bold; font-size: 0.85em;"></span>
+        <span id="status-msg" style="margin-left: auto; color: #636e72; font-weight: bold; font-size: 0.85em; white-space: nowrap; margin-bottom: 12px;"></span>
+        <div id="active-filters-container" style="display: flex; flex-wrap: wrap; gap: 8px 20px; font-size: 0.85em; color: #e17055; font-weight: 700; flex: 1 1 100%; margin-top: 5px; padding-top: 10px; border-top: 1px dashed #dee2e6; display: none;"></div>
     </div>
 
     <div class="dashboard-container">
@@ -125,7 +129,14 @@
         Chart.register(ChartDataLabels);
 
         let data = [];
-        let filtered = [], selected = null, selectedReason = null, selectedMessage = null, selectedDay = null;
+        let filtered = [], selectedMessage = null, currentLogReason = null;
+        let selectedMachines = [], selectedReasons = [], selectedDays = [];
+
+        function toggleSelection(arr, item) {
+            const idx = arr.indexOf(item);
+            if (idx > -1) arr.splice(idx, 1);
+            else arr.push(item);
+        }
         let pieChart = null, scrollChart = null, hourlyChart = null, dailyChart = null, messageChart = null, modalChart = null, machineErrorsChart = null;
         let currentMinTs = '', currentMaxTs = '';
         const palette = ['#e17055', '#0984e3', '#00b894', '#6c5ce7', '#fdcb6e', '#fab1a0', '#2d3436', '#d63031', '#00cec9', '#74b9ff'];
@@ -248,7 +259,7 @@
         function resetDashboard() {
             document.getElementById('start-date').value = currentMinTs;
             document.getElementById('end-date').value = currentMaxTs;
-            selected = null; selectedReason = null; selectedMessage = null; selectedDay = null;
+            selectedMachines = []; selectedReasons = []; selectedMessage = null; selectedDays = [];
             applyFilters();
         }
 
@@ -262,8 +273,8 @@
 
         function render() {
             // if you click a day, it filters everything on the dashboard to just show that day's stuff
-            const dayFiltered = filtered.filter(d => !selectedDay || d._day === selectedDay);
-            const reasonsData = dayFiltered.filter(d => !selectedReason || d['Reject Detail'] === selectedReason);
+            const dayFiltered = filtered.filter(d => selectedDays.length === 0 || selectedDays.includes(d._day));
+            const reasonsData = dayFiltered.filter(d => selectedReasons.length === 0 || selectedReasons.includes(d['Reject Detail']));
             const counts = {}; reasonsData.forEach(d => counts[d['Machine Name']] = (counts[d['Machine Name']] || 0) + 1);
             const sorted = Object.entries(counts).sort((a,b) => b[1]-a[1]);
 
@@ -295,6 +306,24 @@
             }
             
             if (machineErrorsChart) machineErrorsChart.destroy();
+            
+            // Generate active filter messages
+            let filterMsgs = [];
+            let fCount = 1;
+            if (selectedMachines.length > 0) {
+                filterMsgs.push(`<div style="display: flex; align-items: center; gap: 5px; background: rgba(225, 112, 85, 0.1); padding: 4px 8px; border-radius: 6px;"><span>${fCount++}) ${selectedMachines.join(', ')} selected from Machine Chart</span><button onclick="selectedMachines=[]; render();" style="background: none; border: none; color: #d63031; cursor: pointer; font-weight: bold; padding: 0 4px;" title="Clear Machine Filters">✕</button></div>`);
+            }
+            if (selectedReasons.length > 0) {
+                filterMsgs.push(`<div style="display: flex; align-items: center; gap: 5px; background: rgba(225, 112, 85, 0.1); padding: 4px 8px; border-radius: 6px;"><span>${fCount++}) ${selectedReasons.join(', ')} selected from Global Rejection Reasons</span><button onclick="selectedReasons=[]; render();" style="background: none; border: none; color: #d63031; cursor: pointer; font-weight: bold; padding: 0 4px;" title="Clear Reason Filters">✕</button></div>`);
+            }
+            if (selectedDays.length > 0) {
+                filterMsgs.push(`<div style="display: flex; align-items: center; gap: 5px; background: rgba(225, 112, 85, 0.1); padding: 4px 8px; border-radius: 6px;"><span>${fCount++}) ${selectedDays.join(', ')} selected from Daily Rejection Trend</span><button onclick="selectedDays=[]; render();" style="background: none; border: none; color: #d63031; cursor: pointer; font-weight: bold; padding: 0 4px;" title="Clear Date Filters">✕</button></div>`);
+            }
+            
+            const filterContainer = document.getElementById('active-filters-container');
+            filterContainer.innerHTML = filterMsgs.join('');
+            filterContainer.style.display = filterMsgs.length > 0 ? 'flex' : 'none';
+
             const maxMachineCount = sorted.length ? sorted[0][1] : 10;
             machineErrorsChart = new Chart(document.getElementById('machineErrorsChart'), {
                 type: 'bar',
@@ -303,7 +332,7 @@
                     datasets: [{ 
                         label: 'Total Errors', 
                         data: sorted.map(x => x[1]), 
-                        backgroundColor: sorted.map(x => (selected === x[0] ? '#e17055' : (selected ? '#b2bec3' : '#0984e3'))) 
+                        backgroundColor: sorted.map(x => (selectedMachines.length === 0 ? '#0984e3' : (selectedMachines.includes(x[0]) ? '#e17055' : '#b2bec3'))) 
                     }]
                 },
                 options: {
@@ -311,7 +340,7 @@
                     onClick: (evt, elements) => {
                         if (elements.length > 0) {
                             const label = machineErrorsChart.data.labels[elements[0].index];
-                            selected = (selected === label ? null : label);
+                            toggleSelection(selectedMachines, label);
                             render();
                         }
                     },
@@ -324,33 +353,33 @@
             });
 
             // Determine the fully filtered subset for KPIs and Pie/Hourly charts
-            const sub = selected ? reasonsData.filter(d => d['Machine Name'] === selected) : reasonsData;
+            const sub = selectedMachines.length > 0 ? reasonsData.filter(d => selectedMachines.includes(d['Machine Name'])) : reasonsData;
 
             document.getElementById('kpi-total').innerText = sub.length.toLocaleString();
             document.getElementById('kpi-units').innerText = sorted.length;
             document.getElementById('kpi-worst').innerText = sorted.length ? sorted[0][0].split(' ').pop() : '-';
-            document.getElementById('ranking-title').innerText = selectedReason ? ` Ranking: ${selectedReason}` : ' Racer Ranking';
+            document.getElementById('ranking-title').innerText = selectedReasons.length ? ` Ranking: ${selectedReasons.length > 1 ? selectedReasons.length + ' selected' : selectedReasons[0]}` : ' Racer Ranking';
 
             document.getElementById('leaderboard').innerHTML = sorted.map(([n, c], i) =>
-                `<div class="list-item ${selected===n?'active':''}" onclick="selected=(selected==='${n}'?null:'${n}');render()">` +
+                `<div class="list-item ${selectedMachines.includes(n)?'active':''}" onclick="toggleSelection(selectedMachines, '${n}'); render()">` +
                 `<div class="rank-badge">${i+1}</div>` +
                 `<span style="flex:1">${n}</span>` +
                 `<b>${c}</b></div>`).join('');
 
             // Global Rejection Reasons (scrollChart) should respond to selected Machine and Day
-            const globalFiltered = selected ? dayFiltered.filter(d => d['Machine Name'] === selected) : dayFiltered;
+            const globalFiltered = selectedMachines.length > 0 ? dayFiltered.filter(d => selectedMachines.includes(d['Machine Name'])) : dayFiltered;
             const globalErrs = {}; globalFiltered.forEach(d => globalErrs[d['Reject Detail']] = (globalErrs[d['Reject Detail']] || 0) + 1);
             const sortedGlobal = Object.entries(globalErrs).sort((a,b) => b[1]-a[1]);
             const maxGlobalVal = sortedGlobal.length ? Math.max(...sortedGlobal.map(x => x[1])) : 10;
             
-            document.getElementById('scroll-title').innerText = selected ? ` ${selected} Rejection Reasons` : ' Global Rejection Reasons';
+            document.getElementById('scroll-title').innerText = selectedMachines.length ? ` ${selectedMachines.length > 1 ? selectedMachines.length + ' Machines' : selectedMachines[0]} Rejection Reasons` : ' Global Rejection Reasons';
 
             if(scrollChart) scrollChart.destroy();
             scrollChart = new Chart(document.getElementById('scrollChart'), {
-                type: 'bar', data: { labels: sortedGlobal.map(x => x[0]), datasets: [{ label: 'Qty', data: sortedGlobal.map(x => x[1]), backgroundColor: sortedGlobal.map(x => (selectedReason === x[0] ? '#d63031' : (selectedReason ? '#b2bec3' : '#e17055'))) }] },
+                type: 'bar', data: { labels: sortedGlobal.map(x => x[0]), datasets: [{ label: 'Qty', data: sortedGlobal.map(x => x[1]), backgroundColor: sortedGlobal.map(x => (selectedReasons.length === 0 ? '#e17055' : (selectedReasons.includes(x[0]) ? '#d63031' : '#b2bec3'))) }] },
                 options: {
                     responsive: true, maintainAspectRatio: false,
-                    onClick: (evt, elements) => { if (elements.length > 0) { const label = sortedGlobal[elements[0].index][0]; selectedReason = (selectedReason === label ? null : label); render(); } },
+                    onClick: (evt, elements) => { if (elements.length > 0) { const label = sortedGlobal[elements[0].index][0]; toggleSelection(selectedReasons, label); render(); } },
                     plugins: { legend: { display: false }, datalabels: { anchor: 'end', align: 'top', color: '#1a1a1a', font: { weight: 'bold' } } },
                     scales: { y: { beginAtZero: true, suggestedMax: maxGlobalVal * 1.15 }, x: { grid: { display: false } } }
                 }
@@ -360,8 +389,8 @@
             // Filter by selected reason and machine to update trend, but DO NOT filter by selectedDay
             // so the full trend is always visible for the selection.
             const dailyFiltered = filtered.filter(d => 
-                (!selectedReason || d['Reject Detail'] === selectedReason) && 
-                (!selected || d['Machine Name'] === selected)
+                (selectedReasons.length === 0 || selectedReasons.includes(d['Reject Detail'])) && 
+                (selectedMachines.length === 0 || selectedMachines.includes(d['Machine Name']))
             );
             const dayCounts = {};
             const startVal = document.getElementById('start-date').value;
@@ -380,19 +409,19 @@
             if (dailyChart) dailyChart.destroy();
             dailyChart = new Chart(document.getElementById('dailyChart'), {
                 type: 'bar',
-                data: { labels: dayLabels, datasets: [{ label: 'Qty', data: dayVals, backgroundColor: dayLabels.map(d => (selectedDay === d ? '#d63031' : (selectedDay ? '#b2bec3' : '#0984e3'))) }] },
+                data: { labels: dayLabels, datasets: [{ label: 'Qty', data: dayVals, backgroundColor: dayLabels.map(d => (selectedDays.length === 0 ? '#0984e3' : (selectedDays.includes(d) ? '#d63031' : '#b2bec3'))) }] },
                 options: {
                     responsive: true, maintainAspectRatio: false,
-                    onClick: (evt, elements) => { if (elements.length > 0) { const day = dayLabels[elements[0].index]; selectedDay = (selectedDay === day ? null : day); render(); } },
+                    onClick: (evt, elements) => { if (elements.length > 0) { const day = dayLabels[elements[0].index]; toggleSelection(selectedDays, day); render(); } },
                     plugins: { legend: { display: false }, datalabels: { anchor: 'end', align: 'top', color: '#1a1a1a', font: { weight: 'bold', size: 10 } } },
                     scales: { y: { beginAtZero: true, suggestedMax: maxDayVal * 1.2 }, x: { grid: { display: false } } }
                 }
             });
-            document.getElementById('daily-title').innerHTML = (selectedDay ? `📅 Daily Rejection Trend — 📌 ${selectedDay} selected` : '📅 Daily Rejection Trend') +
+            document.getElementById('daily-title').innerHTML = (selectedDays.length ? `Daily Rejection Trend — 📌 ${selectedDays.length > 1 ? selectedDays.length + ' selected' : selectedDays[0]}` : '📅 Daily Rejection Trend') +
                 ' <span style="font-size:0.7em; font-weight:normal; color:#636e72;">(click a day to filter everything below)</span>';
 
             const hourCounts = Array(24).fill(0);
-            reasonsData.forEach(d => { if (!selected || d['Machine Name'] === selected) hourCounts[d.Hour]++; });
+            reasonsData.forEach(d => { if (selectedMachines.length === 0 || selectedMachines.includes(d['Machine Name'])) hourCounts[d.Hour]++; });
             const maxHourVal = Math.max(...hourCounts);
 
             if(hourlyChart) hourlyChart.destroy();
@@ -413,7 +442,7 @@
             const sortedErrs = Object.entries(errs).sort((a,b) => b[1]-a[1]);
             const total = sub.length || 1;
             document.getElementById('kpi-top-err').innerText = sortedErrs.length ? sortedErrs[0][0] : '-';
-            document.getElementById('chart-title').innerText = selected ? ` ${selected} Reasons` : ' Root Cause Breakdown';
+            document.getElementById('chart-title').innerText = selectedMachines.length ? ` ${selectedMachines.length > 1 ? selectedMachines.length + ' Machines' : selectedMachines[0]} Reasons` : ' Root Cause Breakdown';
 
             if(pieChart) pieChart.destroy();
             pieChart = new Chart(document.getElementById('pieChart'), {
@@ -425,7 +454,7 @@
                         if (elements.length > 0) { 
                             const fullLabel = pieChart.data.labels[elements[0].index];
                             const label = fullLabel.split(' (')[0];
-                            selectedReason = (selectedReason === label ? null : label); 
+                            toggleSelection(selectedReasons, label); 
                             render(); 
                         } 
                     },
@@ -448,22 +477,51 @@
 
             document.getElementById('breakdown-body').innerHTML = sortedErrs.map(([name, count]) => {
                 const pctNum = (count/total)*100;
-                return `<tr style="cursor:pointer" onclick="showLogs('${name}')"><td>${name}</td><td><b>${count}</b></td><td><div class="pct-bar" style="width: ${pctNum}%"></div> ${fmtPct(count, total)}</td></tr>`;
+                const isActive = (currentLogReason === name);
+                return `<tr class="clickable-tr ${isActive ? 'table-row-active' : ''}" onclick="selectTableRow(this, '${name}')"><td>${name}</td><td><b>${count}</b></td><td><div class="pct-bar" style="width: ${pctNum}%"></div> ${fmtPct(count, total)}</td></tr>`;
             }).join('');
-            document.getElementById('message-log').innerHTML = '<div style="padding:20px;color:#636e72;text-align:center">Select a table row for logs</div>';
-            document.getElementById('job-log').innerHTML = '<div style="padding:20px;color:#636e72;text-align:center">Click a message above to see associated jobs</div>';
             
-            document.getElementById('message-chart-title').innerText = '📊 Message Log Chart';
-            if(messageChart) {
-                messageChart.destroy();
-                messageChart = null;
+            // If current log reason is set but no longer in the filtered sortedErrs list, clear it out.
+            if (currentLogReason && !sortedErrs.some(x => x[0] === currentLogReason)) {
+                currentLogReason = null;
             }
+            
+            if (!currentLogReason) {
+                document.getElementById('message-log').innerHTML = '<div style="padding:20px;color:#636e72;text-align:center">Select a table row for logs</div>';
+                document.getElementById('job-log').innerHTML = '<div style="padding:20px;color:#636e72;text-align:center">Click a message above to see associated jobs</div>';
+                document.getElementById('message-chart-title').innerText = ' Message Log Chart';
+                if(messageChart) {
+                    messageChart.destroy();
+                    messageChart = null;
+                }
+            } else {
+                // re-render the logs for the active selection to respect new filters
+                showLogs(currentLogReason);
+            }
+        }
 
+        function selectTableRow(tr, name) {
+            if (currentLogReason === name) {
+                currentLogReason = null;
+                document.querySelectorAll('.clickable-tr').forEach(el => el.classList.remove('table-row-active'));
+                document.getElementById('message-log').innerHTML = '<div style="padding:20px;color:#636e72;text-align:center">Select a table row for logs</div>';
+                document.getElementById('job-log').innerHTML = '<div style="padding:20px;color:#636e72;text-align:center">Click a message above to see associated jobs</div>';
+                document.getElementById('message-chart-title').innerText = ' Message Log Chart';
+                if(messageChart) {
+                    messageChart.destroy();
+                    messageChart = null;
+                }
+                return;
+            }
+            document.querySelectorAll('.clickable-tr').forEach(el => el.classList.remove('table-row-active'));
+            tr.classList.add('table-row-active');
+            currentLogReason = name;
+            showLogs(name);
         }
 
         function showLogs(reason) {
-            const base = filtered.filter(d => !selectedReason || d['Reject Detail'] === selectedReason);
-            const sub = selected ? base.filter(d => d['Machine Name'] === selected) : base;
+            const base = filtered.filter(d => selectedReasons.length === 0 || selectedReasons.includes(d['Reject Detail']));
+            const sub = selectedMachines.length > 0 ? base.filter(d => selectedMachines.includes(d['Machine Name'])) : base;
             const logs = sub.filter(d => d['Reject Detail'] === reason);
             const counts = {}; logs.forEach(d => counts[d.Message] = (counts[d.Message] || 0) + 1);
             const sortedLogs = Object.entries(counts).sort((a,b) => b[1]-a[1]);
@@ -512,11 +570,18 @@
         }
 
         function showJobs(msg, reason) {
+            if (selectedMessage === msg) {
+                selectedMessage = null;
+                showLogs(reason);
+                document.getElementById('job-log').innerHTML = '<div style="padding:20px;color:#636e72;text-align:center">Click a message above to see associated jobs</div>';
+                document.getElementById('job-title').innerText = ' Job Inventory for Selected Message';
+                return;
+            }
             selectedMessage = msg;
             showLogs(reason);
 
-            const base = filtered.filter(d => !selectedReason || d['Reject Detail'] === selectedReason);
-            const sub = selected ? base.filter(d => d['Machine Name'] === selected) : base;
+            const base = filtered.filter(d => selectedReasons.length === 0 || selectedReasons.includes(d['Reject Detail']));
+            const sub = selectedMachines.length > 0 ? base.filter(d => selectedMachines.includes(d['Machine Name'])) : base;
             const jobs = sub.filter(d => d.Message === msg);
 
             const uniqueJobs = [...new Set(jobs.map(d => d['Job Name']))].filter(j => j && j !== '?' && j !== '---').sort();
@@ -536,7 +601,7 @@
             document.getElementById('machine-modal').style.display = 'flex';
             
             const wErrs = {};
-            const dayFiltered = filtered.filter(d => !selectedDay || d._day === selectedDay);
+            const dayFiltered = filtered.filter(d => selectedDays.length === 0 || selectedDays.includes(d._day));
             dayFiltered.filter(d => d['Machine Name'] === machineName).forEach(d => wErrs[d['Reject Detail']] = (wErrs[d['Reject Detail']] || 0) + 1);
             const wSorted = Object.entries(wErrs).sort((a,b) => b[1]-a[1]);
             const total = wSorted.reduce((sum, x) => sum + x[1], 0);
