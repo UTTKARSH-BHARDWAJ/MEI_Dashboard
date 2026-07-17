@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.0.0"></script>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; background-color: #f0f2f5; margin: 0; padding: 20px; color: #1a1a1a; }
+        .filter-bar { background: white; padding: 20px; border-radius: 12px; margin-bottom: 20px; display: flex; gap: 15px; align-items: flex-end; box-shadow: 0 2px 8px rgba(0,0,0,0.05); border: 1px solid #dee2e6; }
+        .filter-group { display: flex; flex-direction: column; gap: 5px; }
+        .filter-group label { font-size: 0.75em; font-weight: 800; color: #e17055; text-transform: uppercase; }
+        .filter-group input { padding: 10px; border-radius: 8px; border: 2px solid #eee; }
+        .btn-apply { background: #e17055; color: white; border: none; padding: 12px 24px; border-radius: 8px; font-weight: bold; cursor: pointer; }
+        .btn-upload { background: #0984e3; color: white; border: none; padding: 12px 24px; border-radius: 8px; font-weight: bold; cursor: pointer; }
+        .btn-upload:disabled, .btn-apply:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-reset { background: #dfe6e9; color: #2d3436; border: none; padding: 12px 24px; border-radius: 8px; font-weight: bold; cursor: pointer; }
+        .file-list { display: flex; flex-wrap: wrap; gap: 6px; max-width: 400px; margin-top: 4px; }
+        .file-chip { display: inline-flex; align-items: center; gap: 4px; background: #fff5f2; border: 1px solid #e17055; padding: 3px 8px; border-radius: 6px; font-size: 0.75em; color: #2d3436; animation: chipIn 0.2s ease-out; }
+        .file-chip .remove-file { background: none; border: none; color: #d63031; font-weight: bold; cursor: pointer; font-size: 1.1em; padding: 0 2px; line-height: 1; }
+        .file-chip .remove-file:hover { color: #e17055; }
+        @keyframes chipIn { from { opacity: 0; transform: scale(0.8); } to { opacity: 1; transform: scale(1); } }
+        .dashboard-container { display: grid; grid-template-columns: repeat(4, 1fr); grid-gap: 20px; }
+        .card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); border: 1px solid #dee2e6; display: flex; flex-direction: column; }
+        .kpi-card { text-align: center; border-top: 4px solid #e17055; }
+        .kpi-value { font-size: 2.2em; font-weight: 800; }
+        .full-card { grid-column: span 4; }
+        .chart-card { grid-column: span 3; min-height: 400px; }
+        .narrow-card { grid-column: span 2; min-height: 400px; }
+        .quarter-card { grid-column: span 1; min-height: 400px; }
+        .horizontal-scroll-wrapper { width: 100%; overflow-x: auto; padding: 10px 0; border: 1px solid #eee; border-radius: 8px; }
+        .scroll-chart-container { min-width: 2000px; height: 420px; padding-left: 20px; }
+        .canvas-wrapper { position: relative; flex-grow: 1; min-height: 0; }
+        .scroll-container { overflow-y: auto; flex-grow: 1; max-height: 380px; }
+        .list-item { display: flex; align-items: center; padding: 12px; border-bottom: 1px solid #eee; cursor: pointer; }
+        .rank-badge { background: #eee; min-width: 25px; height: 25px; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin-right: 15px; font-weight: bold; font-size: 0.8em; color: #636e72; }
+        .active { background: #e17055 !important; color: white !important; }
+        .active .msg-text, .active .msg-badge { color: white !important; }
+        .pct-bar { height: 8px; background: #e17055; border-radius: 4px; display: inline-block; }
+        h3 { margin-top: 0; border-left: 5px solid #e17055; padding-left: 12px; font-size: 1.1em; }
+        table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
+        th { text-align: left; padding: 10px; border-bottom: 2px solid #eee; background: #fafafa; }
+        td { padding: 8px; border-bottom: 1px solid #eee; }
+        .message-item { padding: 10px; border-bottom: 1px solid #eee; font-size: 0.85em; display: flex; justify-content: space-between; cursor: pointer; transition: background 0.2s; }
+        .message-item:hover { background: #fff5f2; }
+        .msg-text { flex: 1; padding-right: 10px; color: #2d3436; }
+        .msg-badge { background: #dfe6e9; padding: 2px 8px; border-radius: 8px; font-weight: bold; height: fit-content; color: #000; }
+        .job-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; padding: 10px; }
+        .job-tag { background: #f8f9fa; border: 1px solid #dee2e6; padding: 4px 8px; border-radius: 6px; font-size: 0.8em; text-align: center; color: #4b4b4b; }
+    </style>
+</head>
+<body>
+    <div class="filter-bar" style="flex-wrap: wrap;">
+        <div class="filter-group">
+            <label>Select Files</label>
+            <input type="file" id="file-input" accept=".csv,.xlsx,.xls,.ods" multiple style="display:none">
+            <button class="btn-reset" onclick="document.getElementById('file-input').click()" style="font-size:0.85em; padding:8px 16px;">📂 Browse Files…</button>
+            <div class="file-list" id="file-list"></div>
+        </div>
+        <button class="btn-apply" id="analyze-btn" onclick="processFiles('analyze')" disabled>⚡ Analyze</button>
+        <button class="btn-upload" id="upload-btn" onclick="processFiles('upload')" disabled>💾 Upload & Store</button>
+        <div class="filter-group"><label>Start Range</label><input type="datetime-local" id="start-date"></div>
+        <div class="filter-group"><label>End Range</label><input type="datetime-local" id="end-date"></div>
+        <button class="btn-apply" onclick="applyFilters()">Update</button>
+        <button class="btn-reset" onclick="resetDashboard()">Reset All</button>
+        <span id="status-msg" style="margin-left: auto; color: #636e72; font-weight: bold; font-size: 0.85em;"></span>
+    </div>
+
+    <div class="dashboard-container">
+        <div class="card full-card">
+            <h3 id="scroll-title"> Global Rejection Reasons</h3>
+            <div class="horizontal-scroll-wrapper">
+                <div class="scroll-chart-container"><canvas id="scrollChart"></canvas></div>
+            </div>
+        </div>
+
+        <div class="card kpi-card"><div class="kpi-value" id="kpi-total">0</div><div>Net Rejections</div></div>
+        <div class="card kpi-card"><div class="kpi-value" id="kpi-units" style="color:#0984e3">0</div><div>Active Units</div></div>
+        <div class="card kpi-card"><div class="kpi-value" id="kpi-top-err" style="color:#00b894">-</div><div>Primary Cause</div></div>
+        <div class="card kpi-card"><div class="kpi-value" id="kpi-worst" style="color:#d63031">-</div><div>Worst Unit</div></div>
+
+        <div class="card full-card">
+            <h3 id="daily-title"> Daily Rejection Trend <span style="font-size:0.7em; font-weight:normal; color:#636e72;">(click a day to filter everything below)</span></h3>
+            <div class="canvas-wrapper" style="min-height: 300px;"><canvas id="dailyChart"></canvas></div>
+        </div>
+
+        <div class="card full-card">
+            <h3> Rejections by Hour of Day</h3>
+            <div class="canvas-wrapper" style="min-height: 350px;"><canvas id="hourlyChart"></canvas></div>
+        </div>
+
+        <div class="card quarter-card"><h3 id="ranking-title"> Racer Ranking</h3><div class="scroll-container" id="leaderboard"></div></div>
+        <div class="card chart-card">
+            <h3 id="chart-title">Root Cause Breakdown</h3>
+            <div class="canvas-wrapper"><canvas id="pieChart"></canvas></div>
+        </div>
+        <div class="card narrow-card"><h3> Table View</h3><div class="scroll-container"><table id="breakdown-table"><thead><tr><th>Reason</th><th>Qty</th><th>%</th></tr></thead><tbody id="breakdown-body"></tbody></table></div></div>
+        <div class="card narrow-card"><h3 id="log-title"> Tech Message Log</h3><div class="scroll-container" id="message-log"></div></div>
+
+        <div class="card full-card">
+            <h3 id="job-title"> Job Inventory for Selected Message</h3>
+            <div class="scroll-container" id="job-log"><div style="padding:20px;color:#636e72;text-align:center">Click a message above to see associated jobs</div></div>
+        </div>
+    </div>
+
+    <script>
+        window.onerror = m => { if (window.google && google.colab) google.colab.kernel.invokeFunction('report_js_error', [m], {}); };
+        Chart.register(ChartDataLabels);
+
+        let data = [];
+        let filtered = [], selected = null, selectedReason = null, selectedMessage = null, selectedDay = null;
+        let pieChart = null, scrollChart = null, hourlyChart = null, dailyChart = null;
+        let currentMinTs = '', currentMaxTs = '';
+        const palette = ['#e17055', '#0984e3', '#00b894', '#6c5ce7', '#fdcb6e', '#fab1a0', '#2d3436', '#d63031', '#00cec9', '#74b9ff'];
+
+        function fmtDay(d) {
+            // Local y-m-d, deliberately NOT using toISOString() to avoid UTC-shift mismatches against the naive _day strings
+            return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+        }
+
+        function fmtPct(count, total) {
+            // Exact-enough precision that scales with magnitude, so rare categories never collapse to a misleading "0.0%"
+            const pct = total ? (count / total) * 100 : 0;
+            if (pct === 0) return '0%';
+            if (pct < 0.1) return pct.toFixed(3) + '%';
+            if (pct < 1) return pct.toFixed(2) + '%';
+            return pct.toFixed(1) + '%';
+        }
+
+        function setStatus(msg) {
+            document.getElementById('status-msg').innerText = msg;
+        }
+
+        // --- Data bootstrap: replaces the old Python-templated DATA_JSON with a live fetch,
+        // since the dataset now lives server-side (SQLite, 2-month rolling window) instead of
+        // being baked into the page at generation time. ---
+        function loadDataset(payload) {
+            data = payload.data || [];
+            data.forEach(d => {
+                d._ts = new Date(d.Timestamp).getTime();
+                d._day = d.Timestamp.slice(0, 10); // naive/local, no timezone conversion
+            });
+            currentMinTs = payload.min_ts || '';
+            currentMaxTs = payload.max_ts || '';
+            document.getElementById('start-date').value = currentMinTs;
+            document.getElementById('end-date').value = currentMaxTs;
+            applyFilters();
+        }
+
+        async function fetchStoredData() {
+            setStatus('Loading stored data…');
+            try {
+                const res = await fetch('/api/data');
+                const payload = await res.json();
+                loadDataset(payload);
+                setStatus(data.length ? `Showing ${data.length.toLocaleString()} stored records (last 60 days)` : 'No stored data yet — upload files to begin');
+            } catch (e) {
+                setStatus('Could not load stored data');
+            }
+        }
+        // --- Multi-file management ---
+        let selectedFiles = [];
+
+        function updateButtons() {
+            const hasFiles = selectedFiles.length > 0;
+            document.getElementById('analyze-btn').disabled = !hasFiles;
+            document.getElementById('upload-btn').disabled = !hasFiles;
+        }
+
+        function renderFileList() {
+            const container = document.getElementById('file-list');
+            container.innerHTML = selectedFiles.map((f, i) =>
+                `<span class="file-chip">${f.name}<button class="remove-file" onclick="removeFile(${i})" title="Remove">✕</button></span>`
+            ).join('');
+            updateButtons();
+        }
+
+        function removeFile(index) {
+            selectedFiles.splice(index, 1);
+            renderFileList();
+            if (selectedFiles.length === 0) setStatus('All files removed');
+        }
+
+        document.getElementById('file-input').addEventListener('change', function() {
+            // Append newly selected files (don't replace existing selection)
+            for (const f of this.files) {
+                // Avoid duplicates by name+size
+                if (!selectedFiles.some(sf => sf.name === f.name && sf.size === f.size)) {
+                    selectedFiles.push(f);
+                }
+            }
+            this.value = ''; // reset so re-selecting the same file triggers change
+            renderFileList();
+            setStatus(`${selectedFiles.length} file(s) selected`);
+        });
+
+        async function processFiles(mode) {
+            if (!selectedFiles.length) { setStatus('Choose files first'); return; }
+            const analyzeBtn = document.getElementById('analyze-btn');
+            const uploadBtn = document.getElementById('upload-btn');
+            analyzeBtn.disabled = true;
+            uploadBtn.disabled = true;
+
+            const isUpload = mode === 'upload';
+            const endpoint = isUpload ? '/api/upload' : '/api/analyze';
+            setStatus(isUpload ? 'Uploading & storing…' : 'Analyzing (preview only)…');
+
+            const formData = new FormData();
+            selectedFiles.forEach(f => formData.append('file', f));
+
+            try {
+                const res = await fetch(endpoint, { method: 'POST', body: formData });
+                const payload = await res.json();
+                if (!res.ok || payload.error) {
+                    setStatus('Error: ' + (payload.error || 'processing failed'));
+                    return;
+                }
+                loadDataset(payload);
+                if (isUpload) {
+                    setStatus(`Uploaded — ${data.length.toLocaleString()} records now stored (2-month rolling window)`);
+                } else {
+                    setStatus(`Preview — ${data.length.toLocaleString()} records shown (not stored, will disappear on refresh)`);
+                }
+                selectedFiles = [];
+                renderFileList();
+            } catch (e) {
+                setStatus('Failed — check your connection and try again');
+            } finally {
+                updateButtons();
+            }
+        }
+
+        function resetDashboard() {
+            document.getElementById('start-date').value = currentMinTs;
+            document.getElementById('end-date').value = currentMaxTs;
+            selected = null; selectedReason = null; selectedMessage = null; selectedDay = null;
+            applyFilters();
+        }
+
+        function applyFilters() {
+            const s = new Date(document.getElementById('start-date').value).getTime();
+            const e = new Date(document.getElementById('end-date').value).getTime();
+            // Perf fix: compare against pre-parsed d._ts instead of re-parsing new Date(d.Timestamp) for every row on every click
+            filtered = data.filter(d => d._ts >= s && d._ts <= e);
+            render();
+        }
+
+        function render() {
+            // selectedDay cascades to every section below (leaderboard, hourly, doughnut, table, logs, and the global reasons chart)
+            const dayFiltered = filtered.filter(d => !selectedDay || d._day === selectedDay);
+            const reasonsData = dayFiltered.filter(d => !selectedReason || d['Reject Detail'] === selectedReason);
+            const counts = {}; reasonsData.forEach(d => counts[d['Machine Name']] = (counts[d['Machine Name']] || 0) + 1);
+            const sorted = Object.entries(counts).sort((a,b) => b[1]-a[1]);
+
+            // Determine the fully filtered subset for KPIs and Pie/Hourly charts
+            const sub = selected ? reasonsData.filter(d => d['Machine Name'] === selected) : reasonsData;
+
+            document.getElementById('kpi-total').innerText = sub.length.toLocaleString();
+            document.getElementById('kpi-units').innerText = sorted.length;
+            document.getElementById('kpi-worst').innerText = sorted.length ? sorted[0][0].split(' ').pop() : '-';
+            document.getElementById('ranking-title').innerText = selectedReason ? ` Ranking: ${selectedReason}` : ' Racer Ranking';
+
+            document.getElementById('leaderboard').innerHTML = sorted.map(([n, c], i) =>
+                `<div class="list-item ${selected===n?'active':''}" onclick="selected=(selected==='${n}'?null:'${n}');render()">` +
+                `<div class="rank-badge">${i+1}</div>` +
+                `<span style="flex:1">${n}</span>` +
+                `<b>${c}</b></div>`).join('');
+
+            // Global Rejection Reasons (scrollChart) should respond to selected Machine and Day
+            const globalFiltered = selected ? dayFiltered.filter(d => d['Machine Name'] === selected) : dayFiltered;
+            const globalErrs = {}; globalFiltered.forEach(d => globalErrs[d['Reject Detail']] = (globalErrs[d['Reject Detail']] || 0) + 1);
+            const sortedGlobal = Object.entries(globalErrs).sort((a,b) => b[1]-a[1]);
+            const maxGlobalVal = sortedGlobal.length ? Math.max(...sortedGlobal.map(x => x[1])) : 10;
+            
+            document.getElementById('scroll-title').innerText = selected ? ` ${selected} Rejection Reasons` : ' Global Rejection Reasons';
+
+            if(scrollChart) scrollChart.destroy();
+            scrollChart = new Chart(document.getElementById('scrollChart'), {
+                type: 'bar', data: { labels: sortedGlobal.map(x => x[0]), datasets: [{ label: 'Qty', data: sortedGlobal.map(x => x[1]), backgroundColor: sortedGlobal.map(x => x[0] === selectedReason ? '#d63031' : '#e17055') }] },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    onClick: (evt, elements) => { if (elements.length > 0) { const label = sortedGlobal[elements[0].index][0]; selectedReason = (selectedReason === label ? null : label); render(); } },
+                    plugins: { legend: { display: false }, datalabels: { anchor: 'end', align: 'top', color: '#1a1a1a', font: { weight: 'bold' } } },
+                    scales: { y: { beginAtZero: true, suggestedMax: maxGlobalVal * 1.15 }, x: { grid: { display: false } } }
+                }
+            });
+
+            // ===== Daily Rejection Trend =====
+            // Filter by selected reason and machine to update trend, but DO NOT filter by selectedDay
+            // so the full trend is always visible for the selection.
+            const dailyFiltered = filtered.filter(d => 
+                (!selectedReason || d['Reject Detail'] === selectedReason) && 
+                (!selected || d['Machine Name'] === selected)
+            );
+            const dayCounts = {};
+            const startVal = document.getElementById('start-date').value;
+            const endVal = document.getElementById('end-date').value;
+            if (startVal && endVal) {
+                let cur = new Date(startVal); cur.setHours(0,0,0,0);
+                const endD = new Date(endVal); endD.setHours(0,0,0,0);
+                let guard = 0;
+                while (cur <= endD && guard < 366) { dayCounts[fmtDay(cur)] = 0; cur.setDate(cur.getDate() + 1); guard++; }
+            }
+            dailyFiltered.forEach(d => { dayCounts[d._day] = (dayCounts[d._day] || 0) + 1; });
+            const dayLabels = Object.keys(dayCounts).sort();
+            const dayVals = dayLabels.map(k => dayCounts[k]);
+            const maxDayVal = dayVals.length ? Math.max(...dayVals) : 10;
+
+            if (dailyChart) dailyChart.destroy();
+            dailyChart = new Chart(document.getElementById('dailyChart'), {
+                type: 'bar',
+                data: { labels: dayLabels, datasets: [{ label: 'Qty', data: dayVals, backgroundColor: dayLabels.map(d => d === selectedDay ? '#d63031' : '#0984e3') }] },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    onClick: (evt, elements) => { if (elements.length > 0) { const day = dayLabels[elements[0].index]; selectedDay = (selectedDay === day ? null : day); render(); } },
+                    plugins: { legend: { display: false }, datalabels: { anchor: 'end', align: 'top', color: '#1a1a1a', font: { weight: 'bold', size: 10 } } },
+                    scales: { y: { beginAtZero: true, suggestedMax: maxDayVal * 1.2 }, x: { grid: { display: false } } }
+                }
+            });
+            document.getElementById('daily-title').innerHTML = (selectedDay ? `📅 Daily Rejection Trend — 📌 ${selectedDay} selected` : '📅 Daily Rejection Trend') +
+                ' <span style="font-size:0.7em; font-weight:normal; color:#636e72;">(click a day to filter everything below)</span>';
+
+            const hourCounts = Array(24).fill(0);
+            reasonsData.forEach(d => { if (!selected || d['Machine Name'] === selected) hourCounts[d.Hour]++; });
+            const maxHourVal = Math.max(...hourCounts);
+
+            if(hourlyChart) hourlyChart.destroy();
+            hourlyChart = new Chart(document.getElementById('hourlyChart'), {
+                type: 'line',
+                data: {
+                    labels: hourCounts.map((_, i) => i + ':00'),
+                    datasets: [{ label: 'Qty', data: hourCounts, borderColor: '#e17055', backgroundColor: 'rgba(225,112,85,0.1)', fill: true, tension: 0.3 }]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    plugins: { legend: { display: false }, datalabels: { display: true, align: 'top', backgroundColor: '#fff', borderRadius: 4, padding: 2, font: { size: 9, weight: 'bold' } } },
+                    scales: { y: { beginAtZero: true, suggestedMax: maxHourVal * 1.25 }, x: { grid: { display: false } } }
+                }
+            });
+
+            const errs = {}; sub.forEach(d => errs[d['Reject Detail']] = (errs[d['Reject Detail']] || 0) + 1);
+            const sortedErrs = Object.entries(errs).sort((a,b) => b[1]-a[1]);
+            const total = sub.length || 1;
+            document.getElementById('kpi-top-err').innerText = sortedErrs.length ? sortedErrs[0][0] : '-';
+            document.getElementById('chart-title').innerText = selected ? ` ${selected} Reasons` : ' Root Cause Breakdown';
+
+            if(pieChart) pieChart.destroy();
+            pieChart = new Chart(document.getElementById('pieChart'), {
+                type: 'doughnut',
+                data: { labels: sortedErrs.map(x => `${x[0]} (${fmtPct(x[1], total)})`), datasets: [{ data: sortedErrs.map(x => x[1]), backgroundColor: sortedErrs.map((_, i) => palette[i % palette.length]) }] },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    onClick: (evt, elements) => { 
+                        if (elements.length > 0) { 
+                            const fullLabel = pieChart.data.labels[elements[0].index];
+                            const label = fullLabel.split(' (')[0];
+                            selectedReason = (selectedReason === label ? null : label); 
+                            render(); 
+                        } 
+                    },
+                    plugins: {
+                        legend: { position: 'right', labels: { boxWidth: 10, font: { size: 10 }, padding: 8 } },
+                        datalabels: {
+                            color: '#fff',
+                            font: { weight: 'bold', size: 12 },
+                            // Only label slices big enough to hold readable text (>=2%); 'auto' lets the plugin
+                            // additionally drop any of those that would still collide with a neighbor.
+                            display: (ctx) => {
+                                const v = ctx.dataset.data[ctx.dataIndex];
+                                return (v / total) * 100 < 2 ? false : 'auto';
+                            },
+                            formatter: v => ((v / total) * 100).toFixed(1) + '%'
+                        }
+                    }
+                }
+            });
+
+            document.getElementById('breakdown-body').innerHTML = sortedErrs.map(([name, count]) => {
+                const pctNum = (count/total)*100;
+                return `<tr style="cursor:pointer" onclick="showLogs('${name}')"><td>${name}</td><td><b>${count}</b></td><td><div class="pct-bar" style="width: ${pctNum}%"></div> ${fmtPct(count, total)}</td></tr>`;
+            }).join('');
+            document.getElementById('message-log').innerHTML = '<div style="padding:20px;color:#636e72;text-align:center">Select a table row for logs</div>';
+            document.getElementById('job-log').innerHTML = '<div style="padding:20px;color:#636e72;text-align:center">Click a message above to see associated jobs</div>';
+
+        }
+
+        function showLogs(reason) {
+            const base = filtered.filter(d => !selectedReason || d['Reject Detail'] === selectedReason);
+            const sub = selected ? base.filter(d => d['Machine Name'] === selected) : base;
+            const logs = sub.filter(d => d['Reject Detail'] === reason);
+            const counts = {}; logs.forEach(d => counts[d.Message] = (counts[d.Message] || 0) + 1);
+            const sortedLogs = Object.entries(counts).sort((a,b) => b[1]-a[1]);
+
+            document.getElementById('log-title').innerText = `💬 Log: ${reason}`;
+            document.getElementById('message-log').innerHTML = sortedLogs.map(([msg, c]) =>
+                `<div class="message-item ${selectedMessage === msg ? 'active' : ''}" onclick="showJobs('${msg}', '${reason}')">` +
+                `<span class="msg-text">${msg}</span><span class="msg-badge">${c}</span></div>`).join('');
+        }
+
+        function showJobs(msg, reason) {
+            selectedMessage = msg;
+            showLogs(reason);
+
+            const base = filtered.filter(d => !selectedReason || d['Reject Detail'] === selectedReason);
+            const sub = selected ? base.filter(d => d['Machine Name'] === selected) : base;
+            const jobs = sub.filter(d => d.Message === msg);
+
+            const uniqueJobs = [...new Set(jobs.map(d => d['Job Name']))].filter(j => j && j !== '?' && j !== '---').sort();
+
+            document.getElementById('job-title').innerText = `🆔 Jobs for: ${msg.substring(0, 30)}...`;
+
+            if(uniqueJobs.length === 0) {
+                document.getElementById('job-log').innerHTML = '<div style="padding:20px;color:#636e72;text-align:center">No specific Job Names found for this message</div>';
+                return;
+            }
+
+            document.getElementById('job-log').innerHTML = `<div class="job-grid">${uniqueJobs.map(j => `<div class="job-tag">${j}</div>`).join('')}</div>`;
+        }
+
+        fetchStoredData();
+    </script>
+</body>
+</html>
