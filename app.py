@@ -198,7 +198,7 @@ def clean_data(df):
 
     df_c2_clean = df_r.loc[accepted_rows_c2]
 
-    # ---- Case 3: window-debounce on (Machine Name, Reject Detail, Message) ----
+    # ---- Case 3: window-debounce on (Machine Name, Reject Detail, Message) ---- as both Job Name and Nr Order are absent
     accepted_rows_c3 = []
     c3_sub = df_r.loc[is_c3, ["DateTime"]]
     group_keys_c3 = df_r.loc[is_c3, ["Machine Name", "Reject Detail", "Message"]]
