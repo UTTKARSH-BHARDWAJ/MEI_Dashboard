@@ -245,11 +245,7 @@ def _save_and_read(file_tuple):
 
 
 def fast_json_response(obj):
-    try:
-        import orjson
-        return Response(orjson.dumps(obj), mimetype="application/json")
-    except ImportError:
-        return Response(json.dumps(obj, default=str), mimetype="application/json")
+    return Response(json.dumps(obj, default=str), mimetype="application/json")
 
 
 def _dataset_response():
