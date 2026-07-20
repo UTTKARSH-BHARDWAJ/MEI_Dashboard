@@ -72,6 +72,7 @@
         <button class="btn-upload" id="upload-btn" onclick="processFiles('upload')" disabled>💾 Upload & Store</button>
         <div class="filter-group"><label>Start Range</label><input type="datetime-local" id="start-date"></div>
         <div class="filter-group"><label>End Range</label><input type="datetime-local" id="end-date"></div>
+        <div class="filter-group"><label>Global Search</label><input type="text" id="global-search" placeholder="Search anything..." oninput="applyFilters()" style="min-width: 250px;"></div>
         <button class="btn-apply" onclick="applyFilters()">Update</button>
         <button class="btn-reset" onclick="resetDashboard()">Reset All</button>
         <span id="status-msg" style="margin-left: auto; color: #636e72; font-weight: bold; font-size: 0.85em; white-space: nowrap; margin-bottom: 12px;"></span>
@@ -125,12 +126,19 @@
             </div>
         </div>
 
-        <div class="card full-card">
+        <div class="card full-card" id="card-machine-datetime-logs">
+            <h3 id="machine-datetime-logs-title">🗓️ Machine DateTime Logs</h3>
+            <div class="scroll-container" id="machine-datetime-logs-container">
+                <div style="padding:20px;color:#636e72;text-align:center">Select a reason from Table View to see datetime logs</div>
+            </div>
+        </div>
+
+        <div class="card full-card" id="card-message-chart">
             <h3 id="message-chart-title"> Message Log Chart</h3>
             <div class="canvas-wrapper" style="min-height: 350px;"><canvas id="messageChart"></canvas></div>
         </div>
 
-        <div class="card full-card">
+        <div class="card full-card" id="card-job-inventory">
             <h3 id="job-title"> Job Inventory for Selected Message</h3>
             <div class="scroll-container" id="job-log"><div style="padding:20px;color:#636e72;text-align:center">Click a message above to see associated jobs</div></div>
         </div>
@@ -268,9 +276,13 @@
             }
         }
 
+        let searchQuery = '';
+
         function resetDashboard() {
             document.getElementById('start-date').value = currentMinTs;
             document.getElementById('end-date').value = currentMaxTs;
+            document.getElementById('global-search').value = '';
+            searchQuery = '';
             selectedMachines = []; selectedReasons = []; selectedMessage = null; selectedDays = [];
             applyFilters();
         }
@@ -278,8 +290,28 @@
         function applyFilters() {
             const s = new Date(document.getElementById('start-date').value).getTime();
             const e = new Date(document.getElementById('end-date').value).getTime();
+            const searchEl = document.getElementById('global-search');
+            searchQuery = searchEl ? searchEl.value.toLowerCase().trim() : '';
+
             // super fast filtering: we compare the raw numbers instead of turning strings into dates every single time
-            filtered = data.filter(d => d._ts >= s && d._ts <= e);
+            filtered = data.filter(d => {
+                if (d._ts < s || d._ts > e) return false;
+                
+                if (searchQuery) {
+                    const job = String(d['Job Name'] || '').toLowerCase();
+                    const order = String(d['Nr Order'] || '').toLowerCase();
+                    const machine = String(d['Machine Name'] || '').toLowerCase();
+                    const reason = String(d['Reject Detail'] || '').toLowerCase();
+                    const msg = String(d['Message'] || '').toLowerCase();
+                    
+                    return job.includes(searchQuery) || 
+                           order.includes(searchQuery) || 
+                           machine.includes(searchQuery) || 
+                           reason.includes(searchQuery) || 
+                           msg.includes(searchQuery);
+                }
+                return true;
+            });
             render();
         }
 
@@ -498,7 +530,10 @@
                 currentLogReason = null;
             }
             
-            if (!currentLogReason) {
+            // If a reason is selected or we're doing a global search, propagate the filter down
+            if (currentLogReason || searchQuery) {
+                showLogs(currentLogReason);
+            } else {
                 document.getElementById('message-log').innerHTML = '<div style="padding:20px;color:#636e72;text-align:center">Select a table row for logs</div>';
                 document.getElementById('job-log').innerHTML = '<div style="padding:20px;color:#636e72;text-align:center">Click a message above to see associated jobs</div>';
                 document.getElementById('message-chart-title').innerText = ' Message Log Chart';
@@ -507,9 +542,6 @@
                     messageChart = null;
                 }
                 renderMachineOccurrences();
-            } else {
-                // re-render the logs for the active selection to respect new filters
-                showLogs(currentLogReason);
             }
         }
 
@@ -534,18 +566,22 @@
         }
 
         function showLogs(reason) {
-            const base = filtered.filter(d => selectedReasons.length === 0 || selectedReasons.includes(d['Reject Detail']));
+            if (!reason && !searchQuery) return;
+
+            const base = filtered.filter(d => selectedDays.length === 0 || selectedDays.includes(d._day));
             const sub = selectedMachines.length > 0 ? base.filter(d => selectedMachines.includes(d['Machine Name'])) : base;
-            const logs = sub.filter(d => d['Reject Detail'] === reason);
+            const logs = reason ? sub.filter(d => d['Reject Detail'] === reason) : sub;
             const counts = {}; logs.forEach(d => counts[d.Message] = (counts[d.Message] || 0) + 1);
             const sortedLogs = Object.entries(counts).sort((a,b) => b[1]-a[1]);
 
-            document.getElementById('log-title').innerText = `💬 Log: ${reason}`;
+            const displayReason = reason || `Search: "${searchQuery}"`;
+
+            document.getElementById('log-title').innerText = `💬 Log: ${displayReason}`;
             document.getElementById('message-log').innerHTML = sortedLogs.map(([msg, c]) =>
-                `<div class="message-item ${selectedMessage === msg ? 'active' : ''}" onclick="showJobs('${msg}', '${reason}')">` +
+                `<div class="message-item ${selectedMessage === msg ? 'active' : ''}" onclick="showJobs('${msg.replace(/'/g, "\\'")}', '${reason || ''}')">` +
                 `<span class="msg-text">${msg}</span><span class="msg-badge">${c}</span></div>`).join('');
 
-            document.getElementById('message-chart-title').innerText = `📊 Message Log Chart: ${reason}`;
+            document.getElementById('message-chart-title').innerText = `📊 Message Log Chart: ${displayReason}`;
             if(messageChart) messageChart.destroy();
             
             const maxMsgVal = sortedLogs.length ? Math.max(...sortedLogs.map(x => x[1])) : 10;
@@ -581,13 +617,55 @@
                     }
                 }
             });
+
+            if (searchQuery && !selectedMessage) {
+                document.getElementById('job-title').innerText = `🆔 Jobs for ${displayReason}`;
+                renderJobLogs(logs);
+            }
+
             renderMachineOccurrences();
+        }
+
+        function renderJobLogs(jobsData) {
+            const groupsAll = {};
+            jobsData.forEach(d => {
+                const jobName = d['Job Name'] || '---';
+                if (jobName === '?' || jobName === '---') return;
+                
+                if (!groupsAll[jobName]) groupsAll[jobName] = [];
+                const ts = new Date(d.Timestamp);
+                const formatted = String(ts.getDate()).padStart(2, '0') + '/' +
+                                  String(ts.getMonth() + 1).padStart(2, '0') + '/' +
+                                  ts.getFullYear() + ' ' +
+                                  String(ts.getHours()).padStart(2, '0') + ':' +
+                                  String(ts.getMinutes()).padStart(2, '0') + ':' +
+                                  String(ts.getSeconds()).padStart(2, '0');
+                groupsAll[jobName].push(formatted);
+            });
+
+            const sortedGroupsAll = Object.entries(groupsAll).sort((a, b) => a[0].localeCompare(b[0]));
+
+            if (sortedGroupsAll.length === 0) {
+                document.getElementById('job-log').innerHTML = '<div style="padding:20px;color:#636e72;text-align:center">No specific Job Names found</div>';
+                return;
+            }
+
+            document.getElementById('job-log').innerHTML = sortedGroupsAll.map(([jobName, times]) =>
+                `<div class="occurrence-group" style="border-left-color: #0984e3;">
+                    <div class="occurrence-group-header">
+                        <span class="occurrence-machine-badge" style="background: #0984e3;">${jobName}</span>
+                    </div>
+                    <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+                        ${times.map(t => `<span class="occurrence-chip">${jobName} (${t})</span>`).join('')}
+                    </div>
+                </div>`
+            ).join('');
         }
 
         function showJobs(msg, reason) {
             if (selectedMessage === msg) {
                 selectedMessage = null;
-                showLogs(reason);
+                showLogs(reason || null);
                 document.getElementById('job-log').innerHTML = '<div style="padding:20px;color:#636e72;text-align:center">Click a message above to see associated jobs</div>';
                 document.getElementById('job-title').innerText = ' Job Inventory for Selected Message';
                 return;
@@ -599,42 +677,37 @@
             const sub = selectedMachines.length > 0 ? base.filter(d => selectedMachines.includes(d['Machine Name'])) : base;
             const jobs = sub.filter(d => d.Message === msg);
 
-            const uniqueJobs = [...new Set(jobs.map(d => d['Job Name']))].filter(j => j && j !== '?' && j !== '---').sort();
-
             document.getElementById('job-title').innerText = `🆔 Jobs for: ${msg.substring(0, 30)}...`;
-
-            if(uniqueJobs.length === 0) {
-                document.getElementById('job-log').innerHTML = '<div style="padding:20px;color:#636e72;text-align:center">No specific Job Names found for this message</div>';
-                return;
-            }
-
-            document.getElementById('job-log').innerHTML = `<div class="job-grid">${uniqueJobs.map(j => `<div class="job-tag">${j}</div>`).join('')}</div>`;
+            renderJobLogs(jobs);
         }
 
         function renderMachineOccurrences() {
             const container = document.getElementById('machine-occurrences-container');
             const titleEl = document.getElementById('machine-occurrences-title');
+            const logsContainer = document.getElementById('machine-datetime-logs-container');
+            const logsTitleEl = document.getElementById('machine-datetime-logs-title');
 
-            if (!currentLogReason) {
+            if (!currentLogReason && !searchQuery) {
                 titleEl.innerText = '🔍 Machine Occurrences';
                 container.innerHTML = '<div style="padding:20px;color:#636e72;text-align:center">Select a reason from Table View to see machine occurrences</div>';
+                logsTitleEl.innerText = '🗓️ Machine DateTime Logs';
+                logsContainer.innerHTML = '<div style="padding:20px;color:#636e72;text-align:center">Select a reason from Table View to see datetime logs</div>';
                 return;
             }
 
-            // Start from filtered (respects date/time range), then apply all active interactables
-            let pool = filtered.filter(d => selectedDays.length === 0 || selectedDays.includes(d._day));
-            if (selectedMachines.length > 0) pool = pool.filter(d => selectedMachines.includes(d['Machine Name']));
-            if (selectedReasons.length > 0) pool = pool.filter(d => selectedReasons.includes(d['Reject Detail']));
-            pool = pool.filter(d => d['Reject Detail'] === currentLogReason);
-            if (selectedMessage) pool = pool.filter(d => d.Message === selectedMessage);
+            // Start from filtered (respects date/time range), then apply all active interactables EXCEPT selectedMachines
+            let poolAllMachines = filtered.filter(d => selectedDays.length === 0 || selectedDays.includes(d._day));
+            if (selectedReasons.length > 0) poolAllMachines = poolAllMachines.filter(d => selectedReasons.includes(d['Reject Detail']));
+            if (currentLogReason) poolAllMachines = poolAllMachines.filter(d => d['Reject Detail'] === currentLogReason);
+            if (selectedMessage) poolAllMachines = poolAllMachines.filter(d => d.Message === selectedMessage);
 
-            pool.sort((a, b) => a._ts - b._ts);
+            poolAllMachines.sort((a, b) => a._ts - b._ts);
 
-            // Group by machine
-            const groups = {};
-            pool.forEach(d => {
+            // Group by machine for ALL machines
+            const groupsAll = {};
+            poolAllMachines.forEach(d => {
                 const machine = d['Machine Name'];
-                if (!groups[machine]) groups[machine] = [];
+                if (!groupsAll[machine]) groupsAll[machine] = [];
                 const ts = new Date(d.Timestamp);
                 const formatted = String(ts.getDate()).padStart(2, '0') + '/' +
                                   String(ts.getMonth() + 1).padStart(2, '0') + '/' +
@@ -642,26 +715,59 @@
                                   String(ts.getHours()).padStart(2, '0') + ':' +
                                   String(ts.getMinutes()).padStart(2, '0') + ':' +
                                   String(ts.getSeconds()).padStart(2, '0');
-                groups[machine].push(formatted);
+                groupsAll[machine].push(formatted);
             });
 
-            const sortedGroups = Object.entries(groups).sort((a, b) => b[1].length - a[1].length);
+            const sortedGroupsAll = Object.entries(groupsAll).sort((a, b) => b[1].length - a[1].length);
 
             const label = selectedMessage
-                ? `${currentLogReason} → ${selectedMessage.length > 50 ? selectedMessage.substring(0, 50) + '…' : selectedMessage}`
-                : currentLogReason;
-            titleEl.innerHTML = `🔍 Machine Occurrences: ${label} <span style="font-size:0.7em; font-weight:normal; color:#636e72;">(${pool.length} total across ${sortedGroups.length} machine${sortedGroups.length !== 1 ? 's' : ''})</span>`;
+                ? `${currentLogReason || 'Search'} → ${selectedMessage.length > 50 ? selectedMessage.substring(0, 50) + '…' : selectedMessage}`
+                : (currentLogReason || `Search: "${searchQuery}"`);
+            const subtitle = `<span style="font-size:0.7em; font-weight:normal; color:#636e72;">(${poolAllMachines.length} total across ${sortedGroupsAll.length} machine${sortedGroupsAll.length !== 1 ? 's' : ''})</span>`;
+            
+            titleEl.innerHTML = `🔍 Machine Occurrences: ${label} ${subtitle}`;
 
-            if (sortedGroups.length === 0) {
+            if (sortedGroupsAll.length === 0) {
                 container.innerHTML = '<div style="padding:20px;color:#636e72;text-align:center">No occurrences found for the current filters</div>';
+                logsTitleEl.innerHTML = `🗓️ Machine DateTime Logs: ${label}`;
+                logsContainer.innerHTML = '<div style="padding:20px;color:#636e72;text-align:center">No occurrences found for the current filters</div>';
                 return;
             }
 
-            container.innerHTML = sortedGroups.map(([machine, times]) =>
+            container.innerHTML = `<div style="display: flex; flex-wrap: wrap; gap: 10px;">` + 
+                sortedGroupsAll.map(([machine, times]) => {
+                    const isActive = selectedMachines.includes(machine);
+                    const bg = isActive ? '#e17055' : '#fff5f2';
+                    const color = isActive ? '#fff' : '#2d3436';
+                    const border = isActive ? '#d63031' : '#e17055';
+                    const badgeBg = isActive ? '#fff' : '#6c5ce7';
+                    const badgeColor = isActive ? '#e17055' : '#fff';
+                    
+                    return `<div class="occurrence-group-header" onclick="toggleSelection(selectedMachines, '${machine}'); render()" style="margin:0; background: ${bg}; padding: 8px 12px; border-radius: 8px; border: 1px solid ${border}; cursor: pointer; transition: all 0.2s;">
+                        <span class="occurrence-machine-badge" style="background: ${badgeBg}; color: ${badgeColor};">${machine}</span>
+                        <span class="occurrence-count" style="color:${color}; font-weight:bold;">${times.length} occurrence${times.length !== 1 ? 's' : ''}</span>
+                    </div>`;
+                }).join('') + 
+            `</div>`;
+
+            let sortedGroupsFiltered = sortedGroupsAll;
+            if (selectedMachines.length > 0) {
+                sortedGroupsFiltered = sortedGroupsAll.filter(([machine, _]) => selectedMachines.includes(machine));
+            }
+
+            const filteredTotal = sortedGroupsFiltered.reduce((sum, [_, times]) => sum + times.length, 0);
+            const subtitleLogs = `<span style="font-size:0.7em; font-weight:normal; color:#636e72;">(${filteredTotal} total across ${sortedGroupsFiltered.length} machine${sortedGroupsFiltered.length !== 1 ? 's' : ''})</span>`;
+            logsTitleEl.innerHTML = `🗓️ Machine DateTime Logs: ${label} ${subtitleLogs}`;
+
+            if (sortedGroupsFiltered.length === 0) {
+                logsContainer.innerHTML = '<div style="padding:20px;color:#636e72;text-align:center">No occurrences found for the selected machines</div>';
+                return;
+            }
+
+            logsContainer.innerHTML = sortedGroupsFiltered.map(([machine, times]) =>
                 `<div class="occurrence-group">
                     <div class="occurrence-group-header">
                         <span class="occurrence-machine-badge">${machine}</span>
-                        <span class="occurrence-count">${times.length} occurrence${times.length !== 1 ? 's' : ''}</span>
                     </div>
                     <div style="display: flex; flex-wrap: wrap; gap: 6px;">
                         ${times.map(t => `<span class="occurrence-chip">${machine} (${t})</span>`).join('')}

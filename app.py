@@ -48,6 +48,13 @@ def get_db():
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON rejections(timestamp)")
+    
+    # Migration: add nr_order if it doesn't exist
+    try:
+        conn.execute("ALTER TABLE rejections ADD COLUMN nr_order TEXT")
+    except sqlite3.OperationalError:
+        pass  # column already exists
+        
     conn.commit()
     return conn
 
@@ -78,11 +85,11 @@ def insert_records(conn, records):
     now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
     conn.executemany(
         """INSERT OR IGNORE INTO rejections
-           (timestamp, machine_name, reject_detail, message, hour, job_name, ingested_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+           (timestamp, machine_name, reject_detail, message, hour, job_name, nr_order, ingested_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
         [
             (r.get("Timestamp"), r.get("Machine Name"), r.get("Reject Detail"),
-             r.get("Message"), r.get("Hour"), r.get("Job Name"), now)
+             r.get("Message"), r.get("Hour"), r.get("Job Name"), r.get("Nr Order"), now)
             for r in records
         ],
     )
@@ -91,7 +98,7 @@ def insert_records(conn, records):
 
 def fetch_all_records(conn):
     rows = conn.execute(
-        "SELECT timestamp, machine_name, reject_detail, message, hour, job_name "
+        "SELECT timestamp, machine_name, reject_detail, message, hour, job_name, nr_order "
         "FROM rejections ORDER BY timestamp"
     ).fetchall()
     return [
@@ -102,6 +109,7 @@ def fetch_all_records(conn):
             "Message": r["message"],
             "Hour": r["hour"],
             "Job Name": r["job_name"],
+            "Nr Order": r["nr_order"],
         }
         for r in rows
     ]
@@ -225,6 +233,9 @@ def clean_data(df):
     final_df["Timestamp"] = final_df["DateTime"].dt.strftime("%Y-%m-%dT%H:%M:%S")
     final_df["Hour"] = final_df["DateTime"].dt.hour
 
+    # Replace NaN with empty strings so json.dumps doesn't emit invalid NaN tokens
+    final_df = final_df.fillna("")
+
     return final_df
 
 
@@ -306,7 +317,7 @@ def analyze_file():
         final_df = clean_data(df)
 
         records = (
-            final_df[["Timestamp", "Machine Name", "Reject Detail", "Message", "Hour", "Job Name"]]
+            final_df[["Timestamp", "Machine Name", "Reject Detail", "Message", "Hour", "Job Name", "Nr Order"]]
             .dropna(subset=["Timestamp", "Machine Name"])
             .to_dict(orient="records")
         )
@@ -351,7 +362,7 @@ def upload_file():
         final_df = clean_data(df)
 
         new_records = (
-            final_df[["Timestamp", "Machine Name", "Reject Detail", "Message", "Hour", "Job Name"]]
+            final_df[["Timestamp", "Machine Name", "Reject Detail", "Message", "Hour", "Job Name", "Nr Order"]]
             .dropna(subset=["Timestamp", "Machine Name"])
             .to_dict(orient="records")
         )
